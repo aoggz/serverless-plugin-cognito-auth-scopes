@@ -1,0 +1,61 @@
+{
+  "name": "serverless-plugin-cognito-scopes",
+  "version": "0.0.1",
+  "description": "Serverless plugin to handle Cognito scopes",
+  "main": "./src/index.js",
+  "author": "Team Schwifty",
+  "license": "UNLICENSED",
+  "private": false,
+  "devDependencies": {
+    "codecov": "^1.0.1",
+    "eslint": "^4.19.1",
+    "eslint-config-kentcdodds": "^13.0.1",
+    "eslint-plugin-node": "^6.0.1",
+    "husky": "^0.14.3",
+    "lint-staged": "^7.1.2",
+    "prettier": "^1.12.1"
+  },
+  "dependencies": {},
+  "scripts": {
+    "docs": "jsdoc2md src/*.js > api.md",
+    "format": "prettier --write \"**/*.{js,json}\"",
+    "lint": "eslint **/*.js"
+  },
+  "eslintConfig": {
+    "extends": [
+      "kentcdodds",
+      "kentcdodds/jest"
+    ],
+    "env": {
+      "node": true
+    },
+    "overrides": [
+      {
+        "files": [
+          "**/*.schema.js",
+          "**/*.mapper.js",
+          "**/*.generator.js",
+          "**/*.query.js"
+        ],
+        "rules": {
+          "camelcase": "off"
+        }
+      }
+    ]
+  },
+  "prettier": {
+    "printWidth": 100,
+    "singleQuote": true,
+    "tabWidth": 2
+  },
+  "lint-staged": {
+    "*.js": "eslint",
+    "src/**/*.{js,json}": [
+      "prettier --single-quote --print-width=100 --write",
+      "git add"
+    ]
+  },
+  "engines": {
+    "node": "8.10"
+  }
+}
