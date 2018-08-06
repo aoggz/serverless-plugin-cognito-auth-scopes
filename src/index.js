@@ -47,52 +47,51 @@ module.exports = class ServerlessCognitoAuthScopes {
   }
 
   async afterDeploy() {
-    const stackName = this.provider.naming.getStackName(this.stage);
-    const response = await this.serverless.providers.aws.request('CloudFormation', 'describeStacks', { StackName: stackName });
+    try {
+      const stackName = this.naming.getStackName(this.stage);
+      const response = await this.serverless.providers.aws.request('CloudFormation', 'describeStacks', { StackName: stackName });
+      const stackOutputs = response.Stacks[0].Outputs
 
-    const stackOutputs = response.Stacks[0].Outputs
+      const restApiId = stackOutputs.find(this._isApiGatewayCloudFormationOutput).OutputValue;
 
-    const restApiId = stackOutputs.find(x => x.OutputKey === ApiGatewayCloudFormationOutputName).OutputValue;
+      // Gather ids required to perform update to API Gateway methods
+      const methodsToUpdate = this.apiGatewayMethodsToUpdate.map(x => this._toApiGatewayUpdateMethodParam(x, restApiId, stackOutputs));
 
-    // this._consoleLog(stackOutputs);
+      // 
+      await Promise.all(methodsToUpdate.map(this._asUpdateApiGatewayPromise.bind(this)));
 
-    // this._consoleLog(this.apiGatewayMethodsToUpdate);
-
-    const methodsToUpdate = this.apiGatewayMethodsToUpdate.map(x => this._toApiGatewayUpdateMethodParam(x, restApiId, stackOutputs));
-
-    const toMethodUpdateResponsePromise = this._updateApiGatewayMethod.bind(this);
-    await Promise.all(methodsToUpdate.map(toMethodUpdateResponsePromise));
-
-    if (this.apiUpdatesNeedDeployed) {
-      this._consoleLog(`Rest API methods have been updated. Creating deployment for API ${restApiId}...`);
-      await this.serverless.providers.aws.request(
-        'APIGateway',
-        'createDeployment',
-        {
-          restApiId,
-          cacheClusterEnabled: false,
-          stageName: this.stage,
-          stageDescription: 'Adding Cognito Authorization scopes from serverless-plugin-cognito-auth-scopes plugin.'
-        });
-      this._consoleLog('Deployment has been created.');
-    } else {
-      this._consoleLog(`Rest API methods have not been updated. Moving on.`);
+      if (this.apiUpdatesNeedDeployed) {
+        this._consoleLog(`Rest API methods have been updated. Creating deployment for API ${restApiId}...`);
+        await this.serverless.providers.aws.request(
+          'APIGateway',
+          'createDeployment',
+          {
+            restApiId,
+            cacheClusterEnabled: false,
+            stageName: this.stage,
+            stageDescription: 'Adding Cognito Authorization scopes from serverless-plugin-cognito-auth-scopes plugin.'
+          });
+        this._consoleLog('Deployment has been created.');
+      } else {
+        this._consoleLog(`Rest API methods have not been updated. Moving on.`);
+      }
+    } catch (err) {
+      this._consoleLog(`An error was encountered...`);
+      throw new Error(err.toString());
     }
   }
 
   _consoleLog(message) {
-    this.serverless.cli.consoleLog(`Serverless: \u001B[33m${message}\u001B[39m`);
+    this.serverless.cli.consoleLog(`hm-sls-plugin-cognito-auth-scopes: \u001B[33m${message}\u001B[39m`);
   }
 
   _updateCfTemplateFromHttp(event) {
     if (event.http && event.http.authorizer && event.http.cognito && event.http.cognito.scopes) {
-      const resourceName = this.provider.naming.normalizePath(event.http.path);
-      const resourceId = this.provider.naming.getResourceLogicalId(event.http.path);
-      const methodLogicalId = this.provider.naming.getMethodLogicalId(resourceName, event.http.method);
+      const resourceName = this.naming.normalizePath(event.http.path);
+      const resourceId = this.naming.getResourceLogicalId(event.http.path);
+      const methodLogicalId = this.naming.getMethodLogicalId(resourceName, event.http.method);
 
       const cfOutputName = `${methodLogicalId}ResourceId`;
-
-      // this._consoleLog(this.cfTemplate);
 
       this.cfTemplate.Outputs[cfOutputName] = {
         Value: { Ref: resourceId },
@@ -106,46 +105,55 @@ module.exports = class ServerlessCognitoAuthScopes {
     }
   }
 
-  async _updateApiGatewayMethod(method) {
+  async _asUpdateApiGatewayPromise(method) {
 
-    // this._consoleLog(method);
+    this._consoleLog(`Checking to see that method ${method.resourceId} has the Authorization Scopes ${method.authorizationScopes.join(", ")}...`);
+    const getMethodResponse = await this._getApiGatewayMethod(method.httpMethod, method.resourceId, method.restApiId);
 
-    this._consoleLog(`Checking to see that method ${method.resourceId} has expected Authorization Scopes...`);
-    const describeResponse = await this.serverless.providers.aws.request(
-      'APIGateway',
-      'getMethod',
-      {
-        httpMethod: method.httpMethod.toUpperCase(),
-        resourceId: method.resourceId,
-        restApiId: method.restApiId
-      }
-    );
-
-    // this._consoleLog(describeResponse);
-
-    if (describeResponse.authorizationScopes === method.authorizationScopes) {
-      this._consoleLog(`hm-serverless-plugin-cognito-auth-scopes: ${this._toYellow(`Method ${method.resourceId} has expected Authorization Scopes. Moving on.`)}`);
+    if (getMethodResponse.authorizationScopes.join() === method.authorizationScopes.join()) {
+      this._consoleLog(`Method ${method.resourceId} has expected Authorization Scopes. Moving on.`);
       return;
     }
 
     this.apiUpdatesNeedDeployed = true;
     this._consoleLog(`Method ${method.resourceId} does not have expected Authorization Scopes. Updating...`);
 
-    const updateMethodParams = {
-      httpMethod: method.httpMethod.toUpperCase(),
-      resourceId: method.resourceId,
-      restApiId: method.restApiId,
-      patchOperations: [
-        {
-          op: "replace",
-          path: "/authorizationScopes",
-          value: JSON.stringify(method.authorizationScopes)
-        }
-      ]
-    }
-
-    await this.serverless.providers.aws.request('APIGateway', 'updateMethod', updateMethodParams);
+    await this._updateApiGatewayMethodAuthorizationScopes(method.httpMethod, method.resourceId, method.restApiId, method.authorizationScopes);
     this._consoleLog(`Method ${method.resourceId} has been updated.`);
+  }
+
+  _getApiGatewayMethod(httpMethod, resourceId, restApiId) {
+    return this.serverless.providers.aws.request(
+      'APIGateway',
+      'getMethod',
+      {
+        httpMethod: httpMethod.toUpperCase(),
+        resourceId,
+        restApiId
+      }
+    )
+  }
+
+  _isApiGatewayCloudFormationOutput(output) {
+    return output.OutputKey === ApiGatewayCloudFormationOutputName;
+  }
+
+  _updateApiGatewayMethodAuthorizationScopes(httpMethod, resourceId, restApiId, authorizationScopes) {
+    return this.serverless.providers.aws.request(
+      'APIGateway',
+      'updateMethod',
+      {
+        httpMethod: httpMethod.toUpperCase(),
+        resourceId,
+        restApiId,
+        patchOperations: [
+          {
+            op: "add",
+            path: "/authorizationScopes",
+            value: authorizationScopes.join()
+          }
+        ]
+      });
   }
 
   _toApiGatewayUpdateMethodParam(x, restApiId, stackOutputs) {
@@ -155,9 +163,5 @@ module.exports = class ServerlessCognitoAuthScopes {
       restApiId,
       authorizationScopes: x.authorizationScopes
     }
-  }
-
-  _toYellow(message) {
-    return `\u001B[33m${message}\u001B[39m`;
   }
 }
