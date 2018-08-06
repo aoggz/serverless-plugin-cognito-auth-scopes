@@ -57,7 +57,6 @@ module.exports = class ServerlessCognitoAuthScopes {
       // Gather ids required to perform update to API Gateway methods
       const methodsToUpdate = this.apiGatewayMethodsToUpdate.map(x => this._toApiGatewayUpdateMethodParam(x, restApiId, stackOutputs));
 
-      // 
       await Promise.all(methodsToUpdate.map(this._asUpdateApiGatewayPromise.bind(this)));
 
       if (this.apiUpdatesNeedDeployed) {
